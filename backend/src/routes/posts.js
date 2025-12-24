@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 
-const posts = [
+const posts = [ // add any content here to verify connection with frontend
   { id: 1, title: "Backend Post", body: "Served from backend API" }
 ];
 

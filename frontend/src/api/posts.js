@@ -1,8 +1,6 @@
-export const BACKEND_URL =
-  window.location.hostname === "localhost" ? "http://localhost:5000" : "";
-
+// Always use relative URL - nginx proxies /api/* to the backend
 export async function fetchPosts() {
-  const response = await fetch(`${BACKEND_URL}/api/posts`);
+  const response = await fetch("/api/posts");
   if (!response.ok) throw new Error("Failed to fetch posts");
   return response.json();
 }
