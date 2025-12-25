@@ -1,0 +1,121 @@
+name: QA - Build, Push & Deploy
+
+on:
+  # Triggered when pull request is created/updated to main
+  pull_request:
+    branches:
+      - main
+
+  # Manual trigger
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/backend:latest -t $ECR_REGISTRY/backend:${{ github.sha }} ./backend
+          docker push $ECR_REGISTRY/backend:latest
+          docker push $ECR_REGISTRY/backend:${{ github.sha }}
+
+      - name: Build and Push Frontend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/frontend:latest -t $ECR_REGISTRY/frontend:${{ github.sha }} ./frontend
+          docker push $ECR_REGISTRY/frontend:latest
+          docker push $ECR_REGISTRY/frontend:${{ github.sha }}
+
+  deploy-to-qa:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH to AWS QA Server and Deploy
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.QA_INSTANCE_IP }}
+          username: ubuntu
+          key: ${{ secrets.QA_INSTANCE_SSH_KEY }}
+          script: |
+            # Login to ECR using IAM role
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+            
+            # Pull latest images from ECR
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:latest
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:latest
+            
+            # Tag images for docker compose
+            docker tag ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:latest frontend:latest
+            docker tag ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:latest backend:latest
+            
+            # Navigate to project directory
+            cd /home/ubuntu/Dev_ops_assignment4
+            
+            # Stop existing containers and deploy with docker compose
+            docker compose down
+            docker compose up -d
+            
+            # Cleanup unused images
+            docker image prune -f
+
+      - name: Send Email to QA on Success
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "QA Deployment Successful: Branch ${{ github.head_ref }}"
+          to: msajidaligiki@gmail.com
+          from: Github Actions 2022477+2022623
+          body: |
+            Hello QA Team,
+
+            The app has been deployed successfully to QA environment for testing.
+            
+            Branch: ${{ github.head_ref || 'main' }}
+            PR Title: ${{ github.event.pull_request.title }}
+            Triggered by: ${{ github.actor }}
+            
+            Access the app here: http://${{ secrets.QA_INSTANCE_IP }}
+
+      - name: Send Email on Failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "QA Deployment FAILED: Branch ${{ github.head_ref }}"
+          to: msajidaligiki@gmail.com, ${{ github.actor }}@users.noreply.github.com
+          from: Github Actions 2022477+2022623
+          body: |
+            Hello,
+
+            The QA deployment for branch [${{ github.head_ref }}] has FAILED.
+            
+            Details:
+            - Initiated by: ${{ github.actor }}
+            - View Error Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
